@@ -1,0 +1,164 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Messenger Clone</title>
+<style>
+body { margin:0; font-family:Arial; background:#f0f2f5; }
+#loginBox, #messengerApp { width:100%; max-width:1000px; margin:auto; display:flex; min-height:100vh; }
+#loginBox { flex-direction:column; justify-content:center; align-items:center; }
+#loginBox input, #loginBox button { padding:10px; margin:5px; width:200px; }
+button { background:#0084ff; color:white; border:none; border-radius:5px; cursor:pointer;}
+button:hover{ background:#006bbf;}
+#messengerApp { display:none; }
+#sidebar { width:30%; background:white; border-right:1px solid #ccc; padding:10px; display:flex; flex-direction:column; }
+#chatWindow { flex:1; display:flex; flex-direction:column; background:white; padding:10px; }
+#friendsList { flex:1; overflow-y:auto; }
+.friend { padding:8px; border-bottom:1px solid #eee; cursor:pointer; display:flex; justify-content:space-between; }
+.friend:hover{ background:#f0f2f5; }
+#chatBox { flex:1; overflow-y:auto; border:1px solid #ccc; padding:10px; margin-bottom:10px; }
+.message { margin:5px 0; padding:8px; border-radius:8px; max-width:70%; }
+.user { background:#0084ff; color:white; margin-left:auto; }
+.other { background:#e4e6eb; }
+input[type=text] { padding:8px; width:70%; }
+video { width:300px; border:1px solid #ccc; border-radius:5px; margin:5px;}
+</style>
+</head>
+<body>
+
+<!-- LOGIN -->
+<div id="loginBox">
+<h2>Login / Register</h2>
+<input type="text" id="username" placeholder="Username">
+<input type="password" id="password" placeholder="Password">
+<label><input type="checkbox" id="rememberMe"> Remember Me</label><br>
+<button onclick="login()">Login</button>
+<p id="loginMsg"></p>
+</div>
+
+<!-- MESSENGER APP -->
+<div id="messengerApp">
+<div id="sidebar">
+<h3>Friends</h3>
+<div id="friendsList"></div>
+<p>Your ID: <span id="myId"></span></p>
+<div id="qrcode"></div>
+</div>
+<div id="chatWindow">
+<h3 id="chatHeader">Select a friend</h3>
+<div class="chat-box" id="chatBox"></div>
+<input type="text" id="messageInput" placeholder="Type message...">
+<input type="file" id="imageInput" accept="image/*">
+<button onclick="sendMessage()">Send Text</button>
+<button onclick="sendImage()">Send Image</button>
+<button onclick="recordVoice()">Record Voice</button>
+<div id="callButtons" style="margin-top:10px;">
+<button onclick="startVoiceCall()">Call Voice</button>
+<button onclick="startVideoCall()">Call Video</button>
+</div>
+<div id="callArea">
+<video id="localVideo" autoplay muted></video>
+<video id="remoteVideo" autoplay></video>
+</div>
+</div>
+</div>
+
+<!-- Scripts -->
+<script src="https://cdn.jsdelivr.net/npm/qrcodejs/qrcode.min.js"></script>
+<script src="https://www.gstatic.com/firebasejs/8.10.0/firebase-app.js"></script>
+<script src="https://www.gstatic.com/firebasejs/8.10.0/firebase-database.js"></script>
+<script src="https://www.gstatic.com/firebasejs/8.10.0/firebase-storage.js"></script>
+<script src="firebase.js"></script>
+
+<script>
+// GLOBALS
+let currentUser=null,myId="",selectedFriend="",mediaRecorder,audioChunks=[];
+
+// REMEMBER ME
+window.onload=function(){
+  let savedUser=localStorage.getItem("rememberedUser");
+  if(savedUser){
+    currentUser=JSON.parse(savedUser);
+    myId=currentUser.id;
+    loginSuccess();
+  }
+}
+
+// LOGIN
+function login(){
+  let user=document.getElementById("username").value.trim();
+  let pass=document.getElementById("password").value.trim();
+  let remember=document.getElementById("rememberMe").checked;
+  if(user===""||pass===""){document.getElementById("loginMsg").innerText="Enter username & password!"; return;}
+  myId=user+"_"+Math.floor(Math.random()*100000);
+  currentUser={username:user,password:pass,id:myId};
+  db.ref("users/"+user).set(currentUser);
+  if(remember) localStorage.setItem("rememberedUser",JSON.stringify(currentUser));
+  loginSuccess();
+}
+
+function loginSuccess(){
+  document.getElementById("loginBox").style.display="none";
+  document.getElementById("messengerApp").style.display="flex";
+  document.getElementById("myId").innerText=myId;
+  new QRCode(document.getElementById("qrcode"),{text:myId,width:128,height:128});
+  loadFriends();
+  listenMessages();
+}
+
+// FRIENDS LIST
+function loadFriends(){
+  db.ref("users").once("value",snapshot=>{
+    let friends=document.getElementById("friendsList"); friends.innerHTML="";
+    snapshot.forEach(snap=>{
+      let user=snap.val();
+      if(user.id!==myId){
+        let div=document.createElement("div");
+        div.className="friend"; 
+        div.innerHTML=`<span>${user.username}</span>
+        <span><button onclick="startVoiceCall('${user.id}')">🎤</button><button onclick="startVideoCall('${user.id}')">📹</button></span>`;
+        div.onclick=()=>selectFriend(user.id,user.username);
+        friends.appendChild(div);
+      }
+    });
+  });
+}
+
+// SELECT FRIEND
+function selectFriend(id,name){
+  selectedFriend=id;
+  document.getElementById("chatHeader").innerText="Chat with "+name;
+  document.getElementById("chatBox").innerHTML="";
+  listenMessages();
+}
+
+// LISTEN MESSAGES
+function listenMessages(){
+  if(!selectedFriend) return;
+  let chatId=[myId,selectedFriend].sort().join("_");
+  db.ref("messages/"+chatId).on("child_added",snapshot=>{
+    let msg=snapshot.val();
+    if(msg.type==="text") addMessage(msg.text,msg.from===myId?"user":"other");
+    else if(msg.type==="image") addImage(msg.url,msg.from===myId?"user":"other");
+    else if(msg.type==="voice") addVoice(msg.url,msg.from===myId?"user":"other");
+  });
+}
+
+// SEND MESSAGE / IMAGE / VOICE
+function sendMessage(){if(!selectedFriend) return; let text=document.getElementById("messageInput").value.trim(); if(text==="") return; let chatId=[myId,selectedFriend].sort().join("_"); db.ref("messages/"+chatId).push({type:"text",text:text,from:myId,time:Date.now()}); addMessage(text,"user"); document.getElementById("messageInput").value="";}
+function sendImage(){if(!selectedFriend) return; let file=document.getElementById("imageInput").files[0]; if(!file) return; let storageRef=storage.ref("images/"+Date.now()+"_"+file.name); storageRef.put(file).then(()=>storageRef.getDownloadURL().then(url=>{let chatId=[myId,selectedFriend].sort().join("_"); db.ref("messages/"+chatId).push({type:"image",url:url,from:myId,time:Date.now()}); addImage(url,"user");})); document.getElementById("imageInput").value="";}
+function recordVoice(){if(!selectedFriend) return; if(!mediaRecorder){navigator.mediaDevices.getUserMedia({audio:true}).then(stream=>{mediaRecorder=new MediaRecorder(stream); mediaRecorder.ondataavailable=e=>{audioChunks.push(e.data);} mediaRecorder.onstop=()=>{let blob=new Blob(audioChunks,{type:"audio/mp3"});audioChunks=[];let storageRef=storage.ref("voice/"+Date.now()+".mp3"); storageRef.put(blob).then(()=>storageRef.getDownloadURL().then(url=>{let chatId=[myId,selectedFriend].sort().join("_"); db.ref("messages/"+chatId).push({type:"voice",url:url,from:myId,time:Date.now()}); addVoice(url,"user");}));}; mediaRecorder.start(); alert("Recording... click again to stop");});}else{mediaRecorder.stop(); mediaRecorder=null;}}
+
+// DISPLAY FUNCTIONS
+function addMessage(text,type){let chatBox=document.getElementById("chatBox");let msg=document.createElement("div");msg.className="message "+type;msg.textContent=text;chatBox.appendChild(msg);chatBox.scrollTop=chatBox.scrollHeight;}
+function addImage(url,type){let chatBox=document.getElementById("chatBox");let img=document.createElement("img");img.src=url; img.style.maxWidth="70%"; img.style.borderRadius="8px";chatBox.appendChild(img);chatBox.scrollTop=chatBox.scrollHeight;}
+function addVoice(url,type){let chatBox=document.getElementById("chatBox");let audio=document.createElement("audio");audio.src=url; audio.controls=true;chatBox.appendChild(audio);chatBox.scrollTop=chatBox.scrollHeight;}
+
+// CALL BUTTONS (starter)
+function startVoiceCall(friendID=selectedFriend){alert("Voice call starter - implement WebRTC signaling");}
+function startVideoCall(friendID=selectedFriend){alert("Video call starter - implement WebRTC signaling");}
+function listenCalls(){/* placeholder for incoming calls listening */}
+</script>
+</body>
+</html>
